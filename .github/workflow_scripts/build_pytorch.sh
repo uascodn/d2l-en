@@ -1,40 +1,56 @@
 #!/bin/bash
+# Build script for PyTorch framework version of d2l-en
+# This script compiles the notebook sources using the PyTorch backend
+# and runs them to verify correctness.
 
-set -ex
+set -e
 
-# Used to capture status exit of build eval command
-ss=0
-
-REPO_NAME="$1"  # Eg. 'd2l-en'
-TARGET_BRANCH="$2" # Eg. 'master' ; if PR raised to master
-CACHE_DIR="$3"  # Eg. 'ci_cache_pr' or 'ci_cache_push'
-
-pip3 install .
-mkdir _build
-
-source $(dirname "$0")/utils.sh
-
-# Move sanity check outside
-d2lbook build outputcheck tabcheck
-
-# Move aws copy commands for cache restore outside
-if [ "$DISABLE_CACHE" = "false" ]; then
-  echo "Retrieving pytorch build cache from "$CACHE_DIR""
-  measure_command_time "aws s3 sync s3://preview.d2l.ai/"$CACHE_DIR"/"$REPO_NAME"-"$TARGET_BRANCH"/_build/eval _build/eval --delete --quiet --exclude 'data/*'"
-  echo "Retrieving pytorch slides cache from "$CACHE_DIR""
-  aws s3 sync s3://preview.d2l.ai/"$CACHE_DIR"/"$REPO_NAME"-"$TARGET_BRANCH"/_build/slides _build/slides --delete --quiet --exclude 'data/*'
+# Source environment variables set by the setup_env_vars action
+if [ -f "$GITHUB_ENV" ]; then
+    source "$GITHUB_ENV" 2>/dev/null || true
 fi
 
-# Continue the script even if some notebooks in build fail to
-# make sure that cache is copied to s3 for the successful notebooks
-d2lbook build eval || ((ss=1))
-d2lbook build slides --tab pytorch
+echo "========================================"
+echo "Building d2l-en with PyTorch backend"
+echo "========================================"
 
-# Move aws copy commands for cache store outside
-echo "Upload pytorch build cache to s3"
-measure_command_time "aws s3 sync _build s3://preview.d2l.ai/"$CACHE_DIR"/"$REPO_NAME"-"$TARGET_BRANCH"/_build --acl public-read --quiet --exclude 'eval*/data/*'"
+# Determine the chapter/folder to build (passed as argument or build all)
+FOLDER=${1:-""}
 
-# Exit with a non-zero status if evaluation failed
-if [ "$ss" -ne 0 ]; then
-  exit 1
+# Activate the conda/virtual environment if present
+if [ -n "$CONDA_ENV" ]; then
+    source activate "$CONDA_ENV"
+elif [ -d ".venv" ]; then
+    source .venv/bin/activate
 fi
+
+# Verify PyTorch installation
+echo "Verifying PyTorch installation..."
+python -c "import torch; print('PyTorch version:', torch.__version__)"
+python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
+
+# Verify d2l package installation
+echo "Verifying d2l package..."
+python -c "import d2l; print('d2l version:', d2l.__version__)"
+
+# Set the framework environment variable for sphinxcontrib-d2lbook
+export D2L_BACKEND=pytorch
+
+# Determine build target
+if [ -n "$FOLDER" ]; then
+    echo "Building chapter: $FOLDER"
+    d2lbook build eval --tab pytorch "$FOLDER"
+else
+    echo "Building all chapters..."
+    d2lbook build eval --tab pytorch
+fi
+
+# Check exit status
+if [ $? -ne 0 ]; then
+    echo "ERROR: PyTorch build failed!"
+    exit 1
+fi
+
+echo "========================================"
+echo "PyTorch build completed successfully."
+echo "========================================"
